@@ -124,7 +124,7 @@ export class ExporterService {
           { artist, post_id: latestPost.id.toString() },
           latestPost.score.total,
         );
-        this.artistLatestPostScoreCounter.set(
+        this.artistLatestPostFavCounter.set(
           { artist, post_id: latestPost.id.toString() },
           latestPost.fav_count,
         );
