@@ -17,37 +17,37 @@ export class ExporterService {
 
     this.tagCounter = new client.Gauge({
       name: "e621_post_count_tags",
-      help: "Number of posts per tag",
+      help: "Total number of posts tagged with a specific tag",
       labelNames: ["tag"],
     });
 
     this.artistTotalPostsCounter = new client.Gauge({
       name: "e621_posts_by_artist_total",
-      help: "Number of posts per artist",
+      help: "Total number of posts made by a specific artist",
       labelNames: ["artist"],
     });
 
     this.artistPostsScoreCounter = new client.Gauge({
       name: "e621_artist_posts_score",
-      help: "Score per artist posts",
+      help: "Score of an individual post by an artist",
       labelNames: ["artist", "post_id"],
     });
 
     this.artistLatestPostScoreCounter = new client.Gauge({
       name: "e621_latest_post_score",
-      help: "Score per artist latest post",
+      help: "Score of the most recent post by an artist",
       labelNames: ["artist", "post_id"],
     });
 
     this.artistPostsFavCounter = new client.Gauge({
       name: "e621_artist_posts_fav",
-      help: "fav_count per artist posts",
+      help: "Favorite count of an individual post by an artist",
       labelNames: ["artist", "post_id"],
     });
 
     this.artistLatestPostFavCounter = new client.Gauge({
       name: "e621_latest_post_fav",
-      help: "fav_count per artist latest post",
+      help: "Favorite count of the most recent post by an artist",
       labelNames: ["artist", "post_id"],
     });
   }
