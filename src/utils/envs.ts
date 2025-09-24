@@ -10,6 +10,10 @@ export const envs = {
   SCRAPE_USER_AGENT: String(
     process.env.SCRAPE_USER_AGENT || "prometheus-e621-exporter/1.0",
   ),
+  CONSIDER_TAGS_THRESHOLD: Number.parseInt(process.env.CONSIDER_TAGS_THRESHOLD),
+  CONSIDER_SOURCE_THRESHOLD: Number.parseInt(
+    process.env.CONSIDER_SOURCE_THRESHOLD,
+  ),
   MONITORED_ARTISTS:
     process.env.MONITORED_ARTISTS?.split(",").map((a) => a.trim()) || [],
 };

@@ -3,16 +3,23 @@ import client from "prom-client";
 import { envs } from "./utils/envs";
 import { sleep } from "./utils/sleep";
 import { E621DbExportService } from "./e621-db-export.service";
-
-import {
-  Post as DbExportPost,
-  Pool,
-  Tag as DbExportTag,
-  TagAlias,
-  TagImplication,
-  WikiPage,
-} from "./types/e621DbExport";
 import { getMemoryUsage } from "./utils/getMemoryUsage";
+import { parseFileExtension } from "./utils/file-extensions";
+import { parse as parseTldts } from "tldts";
+
+const resolutionBucket = (width: number, height: number) => {
+  const maxDim = Math.max(width, height);
+  if (maxDim >= 4000) return ">4K+";
+  if (maxDim >= 3840) return "4K";
+  if (maxDim >= 2000) return "2K";
+  if (maxDim >= 1920) return "1080p";
+  if (maxDim >= 1280) return "720p";
+  if (maxDim >= 854) return "480p";
+  if (maxDim >= 640) return "360p";
+  if (maxDim >= 426) return "240p";
+  if (maxDim >= 256) return "144p";
+  return "<144p";
+};
 
 export class ExporterService {
   private e621: E621;
@@ -23,18 +30,19 @@ export class ExporterService {
   private artistPostsFavCounter: client.Gauge<string>;
   private artistLatestPostFavCounter: client.Gauge<string>;
 
-  // from dbExport
   private postRatingCounter: client.Gauge<string>;
-  private uploaderTotalPosts: client.Gauge<string>;
-  private postDimensions: client.Gauge<string>;
-  private postFavorites: client.Gauge<string>;
   private poolsCount: client.Gauge<string>;
-  private poolPostCount: client.Gauge<string>;
   private tagPostCount: client.Gauge<string>;
   private tagAliasCount: client.Gauge<string>;
   private tagImplicationCount: client.Gauge<string>;
   private wikiPageCount: client.Gauge<string>;
   private wikiLockedPages: client.Gauge<string>;
+
+  private postResolutionCounter: client.Gauge<string>;
+
+  private postFileExtensionCounter: client.Gauge<string>;
+
+  private postSourceDomainCounter: client.Gauge<string>;
 
   constructor(private readonly e621DbExportService: E621DbExportService) {
     this.e621 = new E621({ userAgent: envs.SCRAPE_USER_AGENT });
@@ -75,79 +83,67 @@ export class ExporterService {
       labelNames: ["artist", "post_id"],
     });
 
-    // from dbExport
     this.postRatingCounter = new client.Gauge({
       name: "e621_posts_by_rating_total",
       help: "Total posts by rating",
       labelNames: ["rating"],
     });
 
-    this.uploaderTotalPosts = new client.Gauge({
-      name: "e621_posts_by_uploader_total",
-      help: "Total posts per uploader",
-      labelNames: ["uploader_id"],
-    });
-
-    this.postDimensions = new client.Gauge({
-      name: "e621_post_dimensions",
-      help: "Width and height of posts",
-      labelNames: ["post_id", "dimension"],
-    });
-
-    this.postFavorites = new client.Gauge({
-      name: "e621_post_favorites",
-      help: "Favorite count per post",
-      labelNames: ["post_id"],
-    });
-
     this.poolsCount = new client.Gauge({
       name: "e621_pools_total",
       help: "Total number of pools",
     });
-
-    this.poolPostCount = new client.Gauge({
-      name: "e621_pool_post_count",
-      help: "Number of posts in a pool",
-      labelNames: ["pool_id"],
-    });
-
     this.tagPostCount = new client.Gauge({
       name: "e621_tag_post_count",
       help: "Post count per tag",
       labelNames: ["tag"],
     });
-
     this.tagAliasCount = new client.Gauge({
       name: "e621_tag_alias_count",
       help: "Number of active tag aliases",
     });
-
     this.tagImplicationCount = new client.Gauge({
       name: "e621_tag_implication_count",
       help: "Number of active tag implications",
     });
-
     this.wikiPageCount = new client.Gauge({
       name: "e621_wiki_pages_total",
       help: "Total number of wiki pages",
     });
-
     this.wikiLockedPages = new client.Gauge({
       name: "e621_wiki_locked_pages_total",
       help: "Number of locked wiki pages",
+    });
+
+    this.postResolutionCounter = new client.Gauge({
+      name: "e621_post_resolution_total",
+      help: "Number of posts by resolution bucket and type",
+      labelNames: ["resolution", "isGif", "isVideo", "isImage", "isFlash"],
+    });
+
+    this.postFileExtensionCounter = new client.Gauge({
+      name: "e621_posts_by_file_extension_total",
+      help: "Number of posts per file extension",
+      labelNames: ["extension"],
+    });
+
+    this.postSourceDomainCounter = new client.Gauge({
+      name: "e621_posts_by_source_domain_total",
+      help: "Number of posts per source domain",
+      labelNames: ["domain"],
     });
   }
 
   async performScrape(): Promise<void> {
     const tasks: { fn: () => Promise<void>; name: string }[] = [
+      {
+        fn: () => this.extractDataFromDbExport(),
+        name: "extractDataFromDbExport",
+      },
       { fn: () => this.scrapePopularTags(), name: "scrapePopularTags" },
       {
         fn: () => this.scrapeMonitoredArtists(),
         name: "scrapeMonitoredArtists",
-      },
-      {
-        fn: () => this.extractDataFromDbExport(),
-        name: "extractDataFromDbExport",
       },
     ];
 
@@ -158,7 +154,6 @@ export class ExporterService {
       } catch (err) {
         console.error(`Failed to run ${task.name}:`, err);
       }
-
       await sleep(1000);
     }
 
@@ -171,74 +166,117 @@ export class ExporterService {
     await this.e621DbExportService.download();
 
     // POSTS
-    const posts: DbExportPost[] = await this.e621DbExportService.getPosts();
+    const fileExtCounts: Record<string, number> = {};
+    const sourceDomainCounts: Record<string, number> = {};
     const ratingCounts: Record<string, number> = {};
-    const uploaderCounts: Map<string, number> = new Map();
+    let totalFavs = 0;
 
-    for (const post of posts) {
-      // Rating counts
-      ratingCounts[post.rating] = (ratingCounts[post.rating] || 0) + 1;
+    await this.e621DbExportService.streamPosts((post) => {
+      const rating =
+        post.rating === "e" || post.rating === "q" || post.rating === "s"
+          ? post.rating
+          : "unknown";
 
-      // Uploader post counts
-      const uploaderId = post.uploader_id.toString();
-      uploaderCounts.set(uploaderId, (uploaderCounts.get(uploaderId) || 0) + 1);
+      ratingCounts[rating] = (ratingCounts[rating] || 0) + 1;
 
-      // Dimensions and favorites
-      this.postDimensions.set(
-        { post_id: post.id.toString(), dimension: "width" },
-        post.image_width,
-      );
-      this.postDimensions.set(
-        { post_id: post.id.toString(), dimension: "height" },
-        post.image_height,
-      );
-      this.postFavorites.set({ post_id: post.id.toString() }, post.fav_count);
+      const favs = Number(post.fav_count) || 0;
+      totalFavs += favs;
+
+      const ext = parseFileExtension(post.file_ext);
+
+      const width = Number(post.image_width) || 0;
+      const height = Number(post.image_height) || 0;
+      const resolution = resolutionBucket(width, height);
+
+      const isGif = ext.extension === "gif" ? "true" : "false";
+      const isImage = ext.category === "image" ? "true" : "false";
+      const isFlash = ext.category === "flash" ? "true" : "false";
+      const isVideo = ext.category === "video" ? "true" : "false";
+
+      this.postResolutionCounter.inc({
+        resolution,
+        isGif,
+        isVideo,
+        isImage,
+        isFlash,
+      });
+
+      fileExtCounts[ext.extension] = (fileExtCounts[ext.extension] || 0) + 1;
+
+      let domain = "unknown";
+      if (post.source) {
+        try {
+          const hostname = new URL(post.source).hostname;
+          const parsed = parseTldts(hostname);
+          domain = parsed.domain || "invalid";
+        } catch {
+          domain = "invalid";
+        }
+      }
+
+      sourceDomainCounts[domain] = (sourceDomainCounts[domain] || 0) + 1;
+    });
+
+    for (const [ext, count] of Object.entries(fileExtCounts)) {
+      this.postFileExtensionCounter.set({ extension: ext }, count);
     }
 
-    // Set rating counters
-    for (const [rating, count] of Object.entries(ratingCounts)) {
+    for (const [domain, count] of Object.entries(sourceDomainCounts)) {
+      if (count >= envs.CONSIDER_SOURCE_THRESHOLD && !Number.isNaN(count)) {
+        this.postSourceDomainCounter.set({ domain }, count);
+      }
+    }
+
+    for (const [rating, count] of Object.entries(ratingCounts))
       this.postRatingCounter.set({ rating }, count);
-    }
-
-    // Set uploader counters
-    for (const [uploaderId, count] of uploaderCounts) {
-      this.uploaderTotalPosts.set({ uploader_id: uploaderId }, count);
-    }
 
     // POOLS
-    const pools: Pool[] = await this.e621DbExportService.getPools();
-    this.poolsCount.set(pools.length);
-    for (const pool of pools) {
-      const count = pool.post_ids ? pool.post_ids.split(",").length : 0;
-      this.poolPostCount.set({ pool_id: pool.id.toString() }, count);
-    }
+    let totalPools = 0;
+    await this.e621DbExportService.streamPools((pool) => {
+      totalPools++;
+    });
+    this.poolsCount.set(totalPools);
 
     // TAGS
-    const tags: DbExportTag[] = await this.e621DbExportService.getTags();
-    for (const tag of tags) {
-      this.tagPostCount.set({ tag: tag.name }, tag.post_count);
-    }
+    await this.e621DbExportService.streamTags((tag) => {
+      const postCount = Number(tag.post_count);
+
+      if (
+        postCount >= envs.CONSIDER_TAGS_THRESHOLD &&
+        !Number.isNaN(postCount)
+      ) {
+        this.tagPostCount.set({ tag: tag.name }, postCount);
+      }
+    });
 
     // TAG ALIASES
-    const tagAliases: TagAlias[] =
-      await this.e621DbExportService.getTagAliases();
-    this.tagAliasCount.set(
-      tagAliases.filter((a) => a.status === "active").length,
-    );
+    let activeAliases = 0;
+    await this.e621DbExportService.streamTagAliases((alias) => {
+      if (alias.status === "active") activeAliases++;
+    });
+    this.tagAliasCount.set(activeAliases);
 
     // TAG IMPLICATIONS
-    const tagImplications: TagImplication[] =
-      await this.e621DbExportService.getTagImplications();
-    this.tagImplicationCount.set(
-      tagImplications.filter((i) => i.status === "active").length,
-    );
+    let activeImplications = 0;
+    await this.e621DbExportService.streamTagImplications((impl) => {
+      if (impl.status === "active") activeImplications++;
+    });
+    this.tagImplicationCount.set(activeImplications);
 
     // WIKI PAGES
-    const wikiPages: WikiPage[] = await this.e621DbExportService.getWikiPages();
-    this.wikiPageCount.set(wikiPages.length);
-    this.wikiLockedPages.set(wikiPages.filter((p) => p.is_locked).length);
+    let wikiTotal = 0;
+    let wikiLocked = 0;
+    await this.e621DbExportService.streamWikiPages((page) => {
+      wikiTotal++;
+      if (page.is_locked) wikiLocked++;
+    });
+    this.wikiPageCount.set(wikiTotal);
+    this.wikiLockedPages.set(wikiLocked);
+
+    console.log("[E621DbExportService] DB export metrics updated!");
   }
 
+  // The rest of your methods scrapePopularTags, scrapeMonitoredArtists, getMetrics remain unchanged
   async scrapeMonitoredArtists(): Promise<void> {
     if (!envs.MONITORED_ARTISTS || envs.MONITORED_ARTISTS.length === 0) {
       console.warn("No authors to monitor");

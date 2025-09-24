@@ -5,7 +5,6 @@ import zlib from "zlib";
 import { pipeline } from "stream";
 import { promisify } from "util";
 import { envs } from "./utils/envs";
-
 import { parse } from "csv-parse";
 import {
   Pool,
@@ -15,6 +14,7 @@ import {
   TagImplication,
   WikiPage,
 } from "./types/e621DbExport";
+import { estimateFileRows } from "./utils/estimateFileRows";
 
 const pipelineAsync = promisify(pipeline);
 
@@ -28,7 +28,6 @@ export class E621DbExportService {
   ) {
     this.cacheDir = path.resolve(cacheDir);
     this.dbExportUrl = dbExportUrl;
-
     if (!fs.existsSync(this.cacheDir))
       fs.mkdirSync(this.cacheDir, { recursive: true });
   }
@@ -66,19 +65,15 @@ export class E621DbExportService {
   }
 
   private async downloadFile(url: string, dest: string): Promise<void> {
-    if (fs.existsSync(dest)) {
-      console.log("[E621DbExportService] File already downloaded");
-      return;
-    }
-
+    if (fs.existsSync(dest)) return;
     const size = await this.getFileSize(url);
     if (size)
       console.log(
         `Downloading file: ${url} (${(size / 1024 / 1024).toFixed(2)} MB)`,
       );
 
-    const fileStream = fs.createWriteStream(dest);
     return new Promise((resolve, reject) => {
+      const fileStream = fs.createWriteStream(dest);
       https
         .get(
           url,
@@ -100,38 +95,35 @@ export class E621DbExportService {
   private async extractGz(filePath: string): Promise<void> {
     const outPath = filePath.replace(/\.gz$/, "");
     if (fs.existsSync(outPath)) return;
-
     try {
       await pipelineAsync(
         fs.createReadStream(filePath),
         zlib.createGunzip(),
         fs.createWriteStream(outPath),
       );
-    } catch (err) {
-      if ((err as any).code === "Z_BUF_ERROR") {
+    } catch (err: any) {
+      if (err.code === "Z_BUF_ERROR") {
         console.warn(
-          `[E621DbExportService] Corrupted file detected: ${filePath}, redownloading...`,
+          `[E621DbExportService] Corrupted file: ${filePath}, redownloading...`,
         );
         fs.unlinkSync(filePath);
         await this.downloadFile(
           this.dbExportUrl + path.basename(filePath),
           filePath,
         );
-        await this.extractGz(filePath); // retry
+        await this.extractGz(filePath);
       } else {
         throw err;
       }
     }
   }
+
   private async getLatestFiles(): Promise<string[]> {
-    console.log("[E621DbExportService] Getting latest files from list");
     const html = await this.fetchHTML(this.dbExportUrl);
     const regex = /href="([^"]+\.csv\.gz)"/g;
     const files: string[] = [];
     let match;
-    while ((match = regex.exec(html)) !== null) {
-      files.push(match[1]);
-    }
+    while ((match = regex.exec(html)) !== null) files.push(match[1]);
 
     const latestMap = new Map<string, string>();
     for (const file of files) {
@@ -145,7 +137,6 @@ export class E621DbExportService {
         latestMap.set(type, file);
       }
     }
-
     return Array.from(latestMap.values());
   }
 
@@ -155,31 +146,112 @@ export class E621DbExportService {
       .filter((f) => f.startsWith(prefix) && !f.endsWith(".gz"));
     if (files.length === 0)
       throw new Error(`No ${prefix} files found in cache`);
-    files.sort((a, b) => (a > b ? -1 : 1)); // descending by name (date)
+    files.sort((a, b) => (a > b ? -1 : 1));
     return files[0];
   }
 
-  private async readCsvFile<T>(fileName: string): Promise<T[]> {
-    const filePath = path.join(this.cacheDir, fileName);
-    if (!fs.existsSync(filePath))
-      throw new Error(`File not found: ${filePath}`);
+  private parseCsvLine(line: string): string[] {
+    const result: string[] = [];
+    let field = "";
+    let inQuotes = false;
 
-    return new Promise((resolve, reject) => {
-      const results: T[] = [];
-      fs.createReadStream(filePath)
-        .pipe(
-          parse({
-            columns: true,
-            skip_empty_lines: true,
-            trim: true,
-          }),
-        )
-        .on("data", (row) => results.push(row))
-        .on("error", reject)
-        .on("end", () => resolve(results));
-    });
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+
+      if (inQuotes) {
+        if (char === '"') {
+          if (line[i + 1] === '"') {
+            field += '"';
+            i++;
+          } else {
+            inQuotes = false;
+          }
+        } else {
+          field += char;
+        }
+      } else {
+        if (char === '"') {
+          inQuotes = true;
+        } else if (char === ",") {
+          result.push(field);
+          field = "";
+        } else {
+          field += char;
+        }
+      }
+    }
+
+    result.push(field);
+    return result;
   }
 
+  private async streamCsv<T>(
+    fileName: string,
+    callback: (row: T) => void,
+    progressInterval = 1_000_000,
+  ) {
+    const filePath = path.join(this.cacheDir, fileName);
+    const stream = fs.createReadStream(filePath, { encoding: "utf8" });
+    let buffer = "";
+    let rowCount = 0;
+
+    console.log("[E621DbExportService] streamCsv estimating total rows...");
+    const totalRows = await estimateFileRows(filePath, 10000);
+    console.log(`[E621DbExportService] streamCsv estimated rows: ${totalRows}`);
+
+    let headers: string[] | null = null;
+
+    return new Promise<void>((resolve, reject) => {
+      stream.on("data", (chunk) => {
+        buffer += chunk;
+        let lineEnd: number;
+
+        while ((lineEnd = buffer.indexOf("\n")) >= 0) {
+          let line = buffer.slice(0, lineEnd);
+          buffer = buffer.slice(lineEnd + 1);
+
+          // Remove trailing \r
+          if (line.endsWith("\r")) line = line.slice(0, -1);
+
+          // Parse header
+          if (!headers) {
+            headers = this.parseCsvLine(line);
+            continue;
+          }
+
+          // Parse row
+          const fields = this.parseCsvLine(line);
+          if (fields.length === 0) continue;
+
+          const row: any = {};
+          for (let i = 0; i < headers.length; i++) {
+            row[headers[i]] = fields[i] ?? "";
+          }
+
+          // Normalize description
+          if (row.description)
+            row.description = row.description.replace(/\r?\n/g, " ");
+
+          rowCount++;
+          if (rowCount % progressInterval === 0 || rowCount === totalRows) {
+            const percent = ((rowCount / totalRows) * 100).toFixed(2);
+            console.log(
+              `[E621DbExportService] streamCsv Processed ${rowCount.toLocaleString()} / ${totalRows.toLocaleString()} rows (${percent}%)`,
+            );
+          }
+
+          try {
+            callback(row);
+          } catch (err) {
+            console.warn("Error processing row:", err);
+          }
+        }
+      });
+
+      stream.on("end", () => resolve());
+      stream.on("error", reject);
+    });
+  }
   public async download(): Promise<void> {
     const latestFiles = await this.getLatestFiles();
     for (const file of latestFiles) {
@@ -190,40 +262,39 @@ export class E621DbExportService {
       console.log("[E621DbExportService] Extracting:", file);
       await this.extractGz(dest);
     }
-    console.log("All latest files downloaded and extracted.");
+    console.log(
+      "[E621DbExportService] All latest files downloaded and extracted.",
+    );
   }
 
-  public get(): string[] {
-    return fs.readdirSync(this.cacheDir).filter((f) => !f.endsWith(".gz"));
-  }
-
-  public async getPosts(): Promise<Post[]> {
+  // Stream-based getters
+  public async streamPosts(callback: (post: Post) => void) {
     const latestFile = this.getLatestFileByPrefix("posts");
-    return this.readCsvFile<Post>(latestFile);
+    await this.streamCsv<Post>(latestFile, callback);
   }
 
-  public async getPools(): Promise<Pool[]> {
+  public async streamPools(callback: (pool: Pool) => void) {
     const latestFile = this.getLatestFileByPrefix("pools");
-    return this.readCsvFile<Pool>(latestFile);
+    await this.streamCsv<Pool>(latestFile, callback);
   }
 
-  public async getTagAliases(): Promise<TagAlias[]> {
-    const latestFile = this.getLatestFileByPrefix("tag_aliases");
-    return this.readCsvFile<TagAlias>(latestFile);
-  }
-
-  public async getTagImplications(): Promise<TagImplication[]> {
-    const latestFile = this.getLatestFileByPrefix("tag_implications");
-    return this.readCsvFile<TagImplication>(latestFile);
-  }
-
-  public async getTags(): Promise<Tag[]> {
+  public async streamTags(callback: (tag: Tag) => void) {
     const latestFile = this.getLatestFileByPrefix("tags");
-    return this.readCsvFile<Tag>(latestFile);
+    await this.streamCsv<Tag>(latestFile, callback);
   }
 
-  public async getWikiPages(): Promise<WikiPage[]> {
+  public async streamTagAliases(callback: (alias: TagAlias) => void) {
+    const latestFile = this.getLatestFileByPrefix("tag_aliases");
+    await this.streamCsv<TagAlias>(latestFile, callback);
+  }
+
+  public async streamTagImplications(callback: (impl: TagImplication) => void) {
+    const latestFile = this.getLatestFileByPrefix("tag_implications");
+    await this.streamCsv<TagImplication>(latestFile, callback);
+  }
+
+  public async streamWikiPages(callback: (page: WikiPage) => void) {
     const latestFile = this.getLatestFileByPrefix("wiki_pages");
-    return this.readCsvFile<WikiPage>(latestFile);
+    await this.streamCsv<WikiPage>(latestFile, callback);
   }
 }
