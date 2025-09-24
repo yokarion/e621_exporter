@@ -1,9 +1,11 @@
 import { ExporterService } from "./exporter.service";
 import Fastify from "fastify";
 import { envs } from "./utils/envs";
+import { E621DbExportService } from "./e621-db-export.service";
 
 const fastify = Fastify();
-const exporter = new ExporterService();
+const e621DbExport = new E621DbExportService();
+const exporter = new ExporterService(e621DbExport);
 
 const SCRAPE_INTERVAL = envs.SCRAPE_INTERVAL_SECONDS * 1000;
 
@@ -18,6 +20,7 @@ exporter
 setInterval(async () => {
   if (isScrapeInProgress) {
     console.warn("Scrape not called because previous call not ended");
+    return;
   }
 
   isScrapeInProgress = true;
