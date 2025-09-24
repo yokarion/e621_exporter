@@ -34,7 +34,7 @@ fastify.get("/metrics", async (request, reply) => {
   return exporter.getMetrics();
 });
 
-fastify.listen({ port: envs.PORT, host: "0.0.0.0" }, (err, address) => {
+fastify.listen({ port: envs.PORT, host: "::" }, (err, address) => {
   if (err) {
     console.error(err);
     process.exit(1);
