@@ -25,8 +25,8 @@ export class ExporterService {
     });
 
     this.artistPostsScoreCounter = new client.Gauge({
-      name: "e621_post_score",
-      help: "Score per post",
+      name: "e621_artist_posts_score",
+      help: "Score per artist posts",
       labelNames: ["artist", "post_id"],
     });
   }
