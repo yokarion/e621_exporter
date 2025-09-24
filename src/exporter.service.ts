@@ -9,6 +9,8 @@ export class ExporterService {
   private artistTotalPostsCounter: client.Gauge<string>;
   private artistPostsScoreCounter: client.Gauge<string>;
   private artistLatestPostScoreCounter: client.Gauge<string>;
+  private artistPostsFavCounter: client.Gauge<string>;
+  private artistLatestPostFavCounter: client.Gauge<string>;
 
   constructor() {
     this.e621 = new E621({ userAgent: envs.SCRAPE_USER_AGENT });
@@ -34,6 +36,18 @@ export class ExporterService {
     this.artistLatestPostScoreCounter = new client.Gauge({
       name: "e621_latest_post_score",
       help: "Score per artist latest post",
+      labelNames: ["artist", "post_id"],
+    });
+
+    this.artistPostsFavCounter = new client.Gauge({
+      name: "e621_artist_posts_fav",
+      help: "fav_count per artist posts",
+      labelNames: ["artist", "post_id"],
+    });
+
+    this.artistLatestPostFavCounter = new client.Gauge({
+      name: "e621_latest_post_fav",
+      help: "fav_count per artist latest post",
       labelNames: ["artist", "post_id"],
     });
   }
@@ -95,16 +109,26 @@ export class ExporterService {
           { artist, post_id: post.id.toString() },
           post.score.total,
         );
+        this.artistPostsFavCounter.set(
+          { artist, post_id: post.id.toString() },
+          post.fav_count,
+        );
       }
 
-      const latestPost = foundPosts.reduce((a, b) =>
-        new Date(a.created_at) > new Date(b.created_at) ? a : b,
-      );
+      if (foundPosts.length !== 0) {
+        const latestPost = foundPosts.reduce((a, b) =>
+          new Date(a.created_at) > new Date(b.created_at) ? a : b,
+        );
 
-      this.artistLatestPostScoreCounter.set(
-        { artist, post_id: latestPost.id.toString() },
-        latestPost.score.total,
-      );
+        this.artistLatestPostScoreCounter.set(
+          { artist, post_id: latestPost.id.toString() },
+          latestPost.score.total,
+        );
+        this.artistLatestPostScoreCounter.set(
+          { artist, post_id: latestPost.id.toString() },
+          latestPost.fav_count,
+        );
+      }
     }
   }
 
