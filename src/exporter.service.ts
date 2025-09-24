@@ -8,6 +8,7 @@ export class ExporterService {
   private tagCounter: client.Gauge<string>;
   private artistTotalPostsCounter: client.Gauge<string>;
   private artistPostsScoreCounter: client.Gauge<string>;
+  private artistLatestPostScoreCounter: client.Gauge<string>;
 
   constructor() {
     this.e621 = new E621({ userAgent: envs.SCRAPE_USER_AGENT });
@@ -27,6 +28,12 @@ export class ExporterService {
     this.artistPostsScoreCounter = new client.Gauge({
       name: "e621_artist_posts_score",
       help: "Score per artist posts",
+      labelNames: ["artist", "post_id"],
+    });
+
+    this.artistLatestPostScoreCounter = new client.Gauge({
+      name: "e621_latest_post_score",
+      help: "Score per artist latest post",
       labelNames: ["artist", "post_id"],
     });
   }
@@ -89,6 +96,15 @@ export class ExporterService {
           post.score.total,
         );
       }
+
+      const latestPost = foundPosts.reduce((a, b) =>
+        new Date(a.created_at) > new Date(b.created_at) ? a : b,
+      );
+
+      this.artistLatestPostScoreCounter.set(
+        { artist, post_id: latestPost.id.toString() },
+        latestPost.score.total,
+      );
     }
   }
 
