@@ -118,7 +118,7 @@ export class E621DbExportService {
     }
   }
 
-  private async getLatestFiles(): Promise<string[]> {
+  public async getLatestFiles(): Promise<string[]> {
     const html = await this.fetchHTML(this.dbExportUrl);
     const regex = /href="([^"]+\.csv\.gz)"/g;
     const files: string[] = [];
@@ -265,6 +265,31 @@ export class E621DbExportService {
     console.log(
       "[E621DbExportService] All latest files downloaded and extracted.",
     );
+  }
+
+  public cleanCacheFolder(): void {
+    if (!fs.existsSync(this.cacheDir)) return;
+
+    const files = fs.readdirSync(this.cacheDir);
+    for (const file of files) {
+      const filePath = path.join(this.cacheDir, file);
+      try {
+        if (fs.lstatSync(filePath).isFile()) {
+          fs.unlinkSync(filePath);
+        }
+      } catch (err) {
+        console.warn(
+          `[E621DbExportService] Failed to delete ${filePath}:`,
+          err,
+        );
+      }
+    }
+
+    console.log("[E621DbExportService] Cache folder cleaned");
+  }
+
+  public getFiles(): string[] {
+    return fs.readdirSync(this.cacheDir).filter((f) => !f.endsWith(".gz"));
   }
 
   // Stream-based getters

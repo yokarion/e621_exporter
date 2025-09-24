@@ -39,10 +39,10 @@ export class ExporterService {
   private wikiLockedPages: client.Gauge<string>;
 
   private postResolutionCounter: client.Gauge<string>;
-
   private postFileExtensionCounter: client.Gauge<string>;
-
   private postSourceDomainCounter: client.Gauge<string>;
+
+  private processedFiles = [];
 
   constructor(private readonly e621DbExportService: E621DbExportService) {
     this.e621 = new E621({ userAgent: envs.SCRAPE_USER_AGENT });
@@ -162,13 +162,32 @@ export class ExporterService {
     console.log("Scrape tasks performed!");
   }
 
+  isDbExportFilesChanged(files: string[]) {
+    const previousFiles = Object.values(this.processedFiles);
+    if (previousFiles.length !== files.length) return true;
+    for (let i = 0; i < files.length; i++) {
+      if (files[i] !== previousFiles[i]) return true;
+    }
+    return false;
+  }
+
   async extractDataFromDbExport(): Promise<void> {
+    const remoteFiles = await this.e621DbExportService.getLatestFiles();
+    if (!this.isDbExportFilesChanged(remoteFiles)) {
+      console.log("e621 dbExport files not changed. Skipping...");
+      return;
+    }
+
     await this.e621DbExportService.download();
+
+    console.log("Files changed. Rebuilding data...");
 
     // POSTS
     const fileExtCounts: Record<string, number> = {};
     const sourceDomainCounts: Record<string, number> = {};
     const ratingCounts: Record<string, number> = {};
+    const resolutionCounts: Record<string, number> = {};
+
     let totalFavs = 0;
 
     await this.e621DbExportService.streamPosts((post) => {
@@ -193,13 +212,9 @@ export class ExporterService {
       const isFlash = ext.category === "flash" ? "true" : "false";
       const isVideo = ext.category === "video" ? "true" : "false";
 
-      this.postResolutionCounter.inc({
-        resolution,
-        isGif,
-        isVideo,
-        isImage,
-        isFlash,
-      });
+      const resolutionCountsKey = `${resolution}|${isGif}|${isVideo}|${isImage}|${isFlash}`;
+      resolutionCounts[resolutionCountsKey] =
+        (resolutionCounts[resolutionCountsKey] || 0) + 1;
 
       fileExtCounts[ext.extension] = (fileExtCounts[ext.extension] || 0) + 1;
 
@@ -216,6 +231,14 @@ export class ExporterService {
 
       sourceDomainCounts[domain] = (sourceDomainCounts[domain] || 0) + 1;
     });
+
+    for (const [key, count] of Object.entries(resolutionCounts)) {
+      const [resolution, isGif, isVideo, isImage, isFlash] = key.split("|");
+      this.postResolutionCounter.set(
+        { resolution, isGif, isVideo, isImage, isFlash },
+        count,
+      );
+    }
 
     for (const [ext, count] of Object.entries(fileExtCounts)) {
       this.postFileExtensionCounter.set({ extension: ext }, count);
@@ -273,10 +296,12 @@ export class ExporterService {
     this.wikiPageCount.set(wikiTotal);
     this.wikiLockedPages.set(wikiLocked);
 
+    this.processedFiles = remoteFiles;
+    this.e621DbExportService.cleanCacheFolder();
+
     console.log("[E621DbExportService] DB export metrics updated!");
   }
 
-  // The rest of your methods scrapePopularTags, scrapeMonitoredArtists, getMetrics remain unchanged
   async scrapeMonitoredArtists(): Promise<void> {
     if (!envs.MONITORED_ARTISTS || envs.MONITORED_ARTISTS.length === 0) {
       console.warn("No authors to monitor");
