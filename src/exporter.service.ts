@@ -13,7 +13,7 @@ export class ExporterService {
     this.e621 = new E621({ userAgent: envs.SCRAPE_USER_AGENT });
 
     this.tagCounter = new client.Gauge({
-      name: "e621_posts_total",
+      name: "e621_post_count_tags",
       help: "Number of posts per tag",
       labelNames: ["tag"],
     });
