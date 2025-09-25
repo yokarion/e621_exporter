@@ -15,6 +15,7 @@ const fastify = Fastify({
       },
     },
   },
+  disableRequestLogging: true,
 });
 const mainLogger = new FastifyLogger("main.ts", fastify);
 
