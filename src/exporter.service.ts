@@ -164,7 +164,7 @@ export class ExporterService {
     }
 
     const memoryUsage = getMemoryUsage();
-    this.logger.log("Current memory usage:", memoryUsage.rss);
+    this.logger.log(`Current memory usage: ${memoryUsage.rss}`);
     this.logger.log("Scrape tasks performed!");
   }
 
