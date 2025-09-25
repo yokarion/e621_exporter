@@ -6,6 +6,7 @@ import { E621DbExportService } from "./e621-db-export.service";
 import { getMemoryUsage } from "./utils/getMemoryUsage";
 import { parseFileExtension } from "./utils/file-extensions";
 import { parse as parseTldts } from "tldts";
+import { Logger } from "./types/logger";
 
 const resolutionBucket = (width: number, height: number) => {
   const maxDim = Math.max(width, height);
@@ -44,7 +45,10 @@ export class ExporterService {
 
   private processedFiles = [];
 
-  constructor(private readonly e621DbExportService: E621DbExportService) {
+  constructor(
+    private readonly e621DbExportService: E621DbExportService,
+    private readonly logger: Logger,
+  ) {
     this.e621 = new E621({ userAgent: envs.SCRAPE_USER_AGENT });
 
     this.tagCounter = new client.Gauge({
@@ -147,19 +151,21 @@ export class ExporterService {
       },
     ];
 
+    this.logger.log(`Performing Scrape of ${tasks.length} tasks...`);
+
     for (const task of tasks) {
       try {
-        console.log(`Running task ${task.name}`);
+        this.logger.log(`Running task ${task.name}`);
         await task.fn();
       } catch (err) {
-        console.error(`Failed to run ${task.name}:`, err);
+        this.logger.error(`Failed to run ${task.name}:`, err);
       }
       await sleep(1000);
     }
 
     const memoryUsage = getMemoryUsage();
-    console.log("Current memory usage:", memoryUsage.rss);
-    console.log("Scrape tasks performed!");
+    this.logger.log("Current memory usage:", memoryUsage.rss);
+    this.logger.log("Scrape tasks performed!");
   }
 
   isDbExportFilesChanged(files: string[]) {
@@ -174,13 +180,13 @@ export class ExporterService {
   async extractDataFromDbExport(): Promise<void> {
     const remoteFiles = await this.e621DbExportService.getLatestFiles();
     if (!this.isDbExportFilesChanged(remoteFiles)) {
-      console.log("e621 dbExport files not changed. Skipping...");
+      this.logger.log("e621 dbExport files not changed. Skipping...");
       return;
     }
 
     await this.e621DbExportService.download();
 
-    console.log("Files changed. Rebuilding data...");
+    this.logger.log("Files changed. Rebuilding data...");
 
     // POSTS
     const fileExtCounts: Record<string, number> = {};
@@ -299,12 +305,12 @@ export class ExporterService {
     this.processedFiles = remoteFiles;
     this.e621DbExportService.cleanCacheFolder();
 
-    console.log("[E621DbExportService] DB export metrics updated!");
+    this.logger.log("DB export metrics updated!");
   }
 
   async scrapeMonitoredArtists(): Promise<void> {
     if (!envs.MONITORED_ARTISTS || envs.MONITORED_ARTISTS.length === 0) {
-      console.warn("No authors to monitor");
+      this.logger.warn("No authors to monitor");
       return;
     }
 
@@ -324,7 +330,7 @@ export class ExporterService {
 
           foundPosts = foundPosts.concat(postsOnPage);
         } catch (err) {
-          console.error("Failed to search for tags");
+          this.logger.error("Failed to search for tags");
         }
 
         await sleep(300);
@@ -374,7 +380,7 @@ export class ExporterService {
         foundTags = foundTags.concat(tagsOnPage);
         await sleep(300);
       } catch (err) {
-        console.error("Failed to search for tags");
+        this.logger.error("Failed to search for tags");
       }
     }
 

@@ -2,10 +2,29 @@ import { ExporterService } from "./exporter.service";
 import Fastify from "fastify";
 import { envs } from "./utils/envs";
 import { E621DbExportService } from "./e621-db-export.service";
+import { FastifyLogger } from "./utils/fastifyLogger";
 
-const fastify = Fastify();
-const e621DbExport = new E621DbExportService();
-const exporter = new ExporterService(e621DbExport);
+const fastify = Fastify({
+  logger: {
+    transport: {
+      target: "pino-pretty",
+      options: {
+        colorize: true,
+        ignore: "pid,hostname,time",
+        translateTime: true,
+      },
+    },
+  },
+});
+const mainLogger = new FastifyLogger("main.ts", fastify);
+
+const e621DbExport = new E621DbExportService(
+  new FastifyLogger(E621DbExportService.name, fastify),
+);
+const exporter = new ExporterService(
+  e621DbExport,
+  new FastifyLogger(ExporterService.name, fastify),
+);
 
 const SCRAPE_INTERVAL = envs.SCRAPE_INTERVAL_SECONDS * 1000;
 
@@ -14,12 +33,12 @@ let isScrapeInProgress = true;
 exporter
   .performScrape()
   .finally(() => (isScrapeInProgress = false))
-  .catch((err) => console.error("Initial scrape failed:", err));
+  .catch((err) => fastify.log.error(`Initial scrape failed. ${err?.message}`));
 
 // Background scrape loop
 setInterval(async () => {
   if (isScrapeInProgress) {
-    console.warn("Scrape not called because previous call not ended");
+    mainLogger.warn("Scrape not called because previous call not ended");
     return;
   }
 
@@ -27,7 +46,7 @@ setInterval(async () => {
   try {
     await exporter.performScrape();
   } catch (err) {
-    console.error("Scrape failed:", err);
+    mainLogger.error(`Scrape failed: ${err?.message}`);
   }
   isScrapeInProgress = false;
 }, SCRAPE_INTERVAL);
@@ -39,8 +58,8 @@ fastify.get("/metrics", async (request, reply) => {
 
 fastify.listen({ port: envs.PORT, host: "::" }, (err, address) => {
   if (err) {
-    console.error(err);
+    mainLogger.error(err?.toString());
     process.exit(1);
   }
-  console.log(`Exporter running at ${address}/metrics`);
+  mainLogger.log(`Exporter running at ${address}/metrics`);
 });

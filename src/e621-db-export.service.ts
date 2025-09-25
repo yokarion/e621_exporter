@@ -5,7 +5,6 @@ import zlib from "zlib";
 import { pipeline } from "stream";
 import { promisify } from "util";
 import { envs } from "./utils/envs";
-import { parse } from "csv-parse";
 import {
   Pool,
   Post,
@@ -15,6 +14,7 @@ import {
   WikiPage,
 } from "./types/e621DbExport";
 import { estimateFileRows } from "./utils/estimateFileRows";
+import { Logger } from "./types/logger";
 
 const pipelineAsync = promisify(pipeline);
 
@@ -23,6 +23,7 @@ export class E621DbExportService {
   private dbExportUrl: string;
 
   constructor(
+    private readonly logger: Logger,
     cacheDir = "./cache_data",
     dbExportUrl = "https://e621.net/db_export/",
   ) {
@@ -68,7 +69,7 @@ export class E621DbExportService {
     if (fs.existsSync(dest)) return;
     const size = await this.getFileSize(url);
     if (size)
-      console.log(
+      this.logger.log(
         `Downloading file: ${url} (${(size / 1024 / 1024).toFixed(2)} MB)`,
       );
 
@@ -103,9 +104,7 @@ export class E621DbExportService {
       );
     } catch (err: any) {
       if (err.code === "Z_BUF_ERROR") {
-        console.warn(
-          `[E621DbExportService] Corrupted file: ${filePath}, redownloading...`,
-        );
+        this.logger.warn(`Corrupted file: ${filePath}, redownloading...`);
         fs.unlinkSync(filePath);
         await this.downloadFile(
           this.dbExportUrl + path.basename(filePath),
@@ -195,9 +194,9 @@ export class E621DbExportService {
     let buffer = "";
     let rowCount = 0;
 
-    console.log("[E621DbExportService] streamCsv estimating total rows...");
+    this.logger.log("streamCsv estimating total rows...");
     const totalRows = await estimateFileRows(filePath, 10000);
-    console.log(`[E621DbExportService] streamCsv estimated rows: ${totalRows}`);
+    this.logger.log(`streamCsv estimated rows: ${totalRows}`);
 
     let headers: string[] | null = null;
 
@@ -235,15 +234,15 @@ export class E621DbExportService {
           rowCount++;
           if (rowCount % progressInterval === 0 || rowCount === totalRows) {
             const percent = ((rowCount / totalRows) * 100).toFixed(2);
-            console.log(
-              `[E621DbExportService] streamCsv Processed ${rowCount.toLocaleString()} / ${totalRows.toLocaleString()} rows (${percent}%)`,
+            this.logger.log(
+              `streamCsv Processed ${rowCount.toLocaleString()} / ${totalRows.toLocaleString()} rows (${percent}%)`,
             );
           }
 
           try {
             callback(row);
           } catch (err) {
-            console.warn("Error processing row:", err);
+            this.logger.warn("Error processing row:", err);
           }
         }
       });
@@ -257,14 +256,12 @@ export class E621DbExportService {
     for (const file of latestFiles) {
       const url = this.dbExportUrl + file;
       const dest = path.join(this.cacheDir, file);
-      console.log("[E621DbExportService] Downloading:", file);
+      this.logger.log(`Downloading: ${file}`);
       await this.downloadFile(url, dest);
-      console.log("[E621DbExportService] Extracting:", file);
+      this.logger.log(`Extracting: ${file}`);
       await this.extractGz(dest);
     }
-    console.log(
-      "[E621DbExportService] All latest files downloaded and extracted.",
-    );
+    this.logger.log("All latest files downloaded and extracted.");
   }
 
   public cleanCacheFolder(): void {
@@ -278,14 +275,11 @@ export class E621DbExportService {
           fs.unlinkSync(filePath);
         }
       } catch (err) {
-        console.warn(
-          `[E621DbExportService] Failed to delete ${filePath}:`,
-          err,
-        );
+        this.logger.warn(`Failed to delete ${filePath}:`, err);
       }
     }
 
-    console.log("[E621DbExportService] Cache folder cleaned");
+    this.logger.log("Cache folder cleaned");
   }
 
   public getFiles(): string[] {
